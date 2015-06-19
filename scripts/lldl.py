@@ -1,0 +1,354 @@
+from tributary.core import Engine, Message, BasePredicate
+from tributary.streams import StreamProducer, StreamElement
+from tributary.log import log_debug, log_info, log_error
+
+import os
+import math
+import requests
+from collections import namedtuple
+
+from gevent.pool import Pool
+
+# bounding box for tiles
+LLCoordinate = namedtuple('LLCoordinate', ['lat', 'lon'])
+LLBounds = namedtuple('LLBounds', ['top_left', 'bottom_right'])
+
+Tile = namedtuple('Tile', ['x', 'y'])
+TileBounds = namedtuple('TileBounds', ['left', 'right', 'top', 'bottom'])
+
+# disable ssl warnings
+requests.packages.urllib3.disable_warnings()
+
+class MapTileProducer(StreamProducer):
+    """docstring for MapTileProducer"""
+    def __init__(self, name, url, startzoom, endzoom):
+        super(MapTileProducer, self).__init__(name)
+        self.url = url
+        self.startzoom = startzoom
+        self.endzoom = endzoom
+        # self.dimensions = 1 << zoom
+
+    def process(self, msg=None):
+        """"""
+
+        z = self.startzoom
+        while z < self.endzoom:
+
+            dimensions = 1 << z
+            x, y = 0, 0
+            while x < dimensions:
+                y = 0
+                while y < dimensions:
+                    url = self.url.format(x=x, y=y, z=z)
+                    # self.log(url)
+
+                    self.scatter(Message(url=url, x=x, y=y, z=z))
+
+                    # increment y
+                    y += 1
+
+                # increment x
+                x += 1
+
+            # increment zoom
+            z += 1
+
+class LLCentricTileProducer(MapTileProducer):
+    """docstring for MapTileProducer"""
+    def __init__(self, name, url, center, radius, startzoom=0, endzoom=12):
+        super(LLCentricTileProducer, self).__init__(name, url, startzoom, endzoom)
+        self.center = center
+        self.radius = radius
+
+        # ll bounds
+        self.bounds = calculateBoundingBox(center.lat, center.lon, radius)
+        self.log_info('Filter Bounds: %s' % repr(self.bounds))
+
+
+    def process(self, msg=None):
+        """"""
+
+        zoom = self.startzoom
+        while zoom <= self.endzoom:
+
+            top_left_tile = deg2tile(self.bounds.top_left.lat, self.bounds.top_left.lon, zoom)
+            bottom_right_tile = deg2tile(self.bounds.bottom_right.lat, self.bounds.bottom_right.lon, zoom)
+
+            # zoom boundaries
+            tile_bounds = TileBounds(top_left_tile.x, bottom_right_tile.x,
+                                     top_left_tile.y, bottom_right_tile.y)
+
+            self.log_info('Level %s Zoom Bounds: %s' % (zoom, repr(tile_bounds)))
+
+            # iterate over horiz tiles
+            xtile = tile_bounds.left
+            while xtile <= tile_bounds.right:
+
+                # iterate over vertical tiles
+                ytile = tile_bounds.top
+                while ytile <= tile_bounds.bottom:
+
+                    # create url
+                    url = self.url.format(x=xtile, y=ytile, z=zoom)
+                    # self.log(url)
+
+                    self.scatter(Message(url=url, x=xtile, y=ytile, z=zoom))
+
+                    # increment y
+                    ytile += 1
+
+                # increment x
+                xtile += 1
+
+            # increment zoom
+            zoom += 1
+
+class MapTileDownloader(StreamElement):
+    """docstring for MapTileDownloader"""
+    def __init__(self, name, root):
+        super(MapTileDownloader, self).__init__(name)
+        self.root = root
+        
+    def process(self, message):
+        """Downloads all map tiles"""
+        data = message.data
+
+        dirpath = os.path.join(self.root, str(data.z), str(data.x))
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath)
+
+        # filepath
+        filepath = os.path.join(dirpath, '%s.png' % data.y)
+        if not os.path.exists(filepath):
+
+            with open(filepath, 'wb') as handle:
+                response = requests.get(data.url, stream=True, verify=False)
+
+                if not response.ok:
+                    self.log_error(response)
+                else:
+                    self.log(data.url)
+
+                    for block in response.iter_content(1024 * 16):
+                        if not block:
+                            break
+
+                        handle.write(block)
+
+def downloadTile(root, message):
+    data = message.data
+
+    dirpath = os.path.join(root, str(data.z), str(data.x))
+    if not os.path.exists(dirpath):
+        os.makedirs(dirpath)
+
+    # filepath
+    filepath = os.path.join(dirpath, '%s.png' % data.y)
+    if not os.path.exists(filepath):
+
+        with open(filepath, 'wb') as handle:
+            response = requests.get(data.url, stream=True, verify=False)
+
+            if not response.ok:
+                log_error(response)
+            else:
+                log_info('DOWNLOADER', data.url)
+
+                for block in response.iter_content(1024 * 16):
+                    if not block:
+                        break
+
+                    handle.write(block)
+
+
+class MapTileMultiDownloader(StreamElement):
+    """docstring for MapTileDownloader"""
+    def __init__(self, name, root):
+        super(MapTileMultiDownloader, self).__init__(name)
+        self.root = root
+
+        # greenlet pool
+        self.pool = Pool(8)
+    
+    def downloadTile(self, message):
+        data = message.data
+
+        dirpath = os.path.join(self.root, str(data.z), str(data.x))
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath)
+
+        # filepath
+        filepath = os.path.join(dirpath, '%s.png' % data.y)
+        if not os.path.exists(filepath):
+
+            with open(filepath, 'wb') as handle:
+                response = requests.get(data.url, stream=True, verify=False)
+
+                if not response.ok:
+                    self.log_error(response)
+                else:
+                    self.log(data.url)
+
+                    for block in response.iter_content(1024 * 16):
+                        if not block:
+                            break
+
+                        handle.write(block)
+
+
+    def process(self, message):
+        """Downloads all map tiles"""
+        # self.pool.spawn(downloadTile, self.root, message)
+        self.pool.spawn(self.downloadTile, message)
+
+    def postProcess(self, message=None):
+        """Joins the gevent pool"""
+        self.pool.join()
+
+
+def calculateBoundingBox(centerLat, centerLon, radius):
+    """Calculates the LL bounding box"""
+    # centerLat, centerLon = 34.721153, -86.674991
+
+    # parameters
+    # number of discrete sample points to be generated along the circle
+    N = 4 
+
+    # generate points
+    points = []
+    for k in xrange(N):
+        # compute angle
+        angle = math.pi*2*k/N
+
+        # dx / dy
+        dx = radius*math.cos(angle)
+        dy = radius*math.sin(angle)
+
+        # calc lat/lon
+        lat = centerLat + (180/math.pi)*(dy/6378137)
+        lon = centerLon + (180/math.pi)*(dx/6378137)/math.cos(centerLat*math.pi/180)
+
+        # add to list
+        points.append(LLCoordinate(lat, lon))
+        # print angle * 180 / math.pi, dx, dy, lat, lon
+
+    # deal with negative lat values
+    if centerLat > 0:
+        min_lat = min([coord.lat for coord in points])
+        max_lat = max([coord.lat for coord in points])
+    else:
+        max_lat = min([coord.lat for coord in points])
+        min_lat = max([coord.lat for coord in points])
+
+    # deal with negative lon values
+    if centerLon > 0:
+        min_lon = max([coord.lon for coord in points])
+        max_lon = min([coord.lon for coord in points])
+    else:
+        max_lon = max([coord.lon for coord in points])
+        min_lon = min([coord.lon for coord in points])
+
+    # return bounding box (top left and bottom right)
+    return LLBounds(LLCoordinate(max_lat, min_lon),
+                      LLCoordinate(min_lat, max_lon))
+
+def deg2tile(lat_deg, lon_deg, zoom):
+    """Converts latitudes and longitudes to tile locations"""
+    # rad latitude
+    lat_rad = math.radians(lat_deg)
+
+    # number of tiles
+    n = 2.0 ** zoom
+
+    # calc x time
+    xtile = int((lon_deg + 180.0) / 360.0 * n)
+
+    # calc y tile
+    ytile = int((1.0 - math.log(math.tan(lat_rad) + (1 / math.cos(lat_rad))) / math.pi) / 2.0 * n)
+    return Tile(xtile, ytile)
+
+class LLTileFilter(BasePredicate):
+    """docstring for LLTileFilter"""
+    def __init__(self, lat, lon, radius):
+        super(LLTileFilter, self).__init__()
+        self.lat = lat
+        self.lon = lon
+        self.radius = radius
+
+        # ll bounds
+        self.bounds = calculateBoundingBox(lat, lon, radius)
+        log_info('LLTileFilter', 'Filter Bounds: %s' % repr(self.bounds))
+
+        # zoom bounds
+        self.zoom_boundaries = {}
+    
+    def apply(self, message):
+        """Filters tiles based on a central lat/lon and radius"""
+
+        zoom = message.data.get('z', None)
+        if zoom is None:
+            return False
+
+        if not zoom in self.zoom_boundaries:
+            top_left_tile = deg2tile(self.bounds.top_left.lat, self.bounds.top_left.lon, zoom)
+            bottom_right_tile = deg2tile(self.bounds.bottom_right.lat, self.bounds.bottom_right.lon, zoom)
+
+            # cache zoom boundaries
+            self.zoom_boundaries[zoom] = TileBounds(top_left_tile.x, bottom_right_tile.x,
+                                                    top_left_tile.y, bottom_right_tile.y)
+
+            log_info('LLTileFilter', 'Level %s Zoom Bounds: %s' % (zoom, repr(self.zoom_boundaries[zoom])))
+
+        # get tile bounds and current tile location
+        tile_bounds = self.zoom_boundaries[zoom]
+        xtile = message.data.get('x', None)
+        ytile = message.data.get('y', None)
+
+
+        # valid message
+        if ytile is not None and xtile is not None:
+            log_debug('LLTileFilter', 'Filtering Tile: %s' % repr(Tile(xtile, ytile)))
+            log_debug('LLTileFilter', 'Tile Bounds: %s' % repr(tile_bounds))
+
+            # check bounds
+            if xtile >= tile_bounds.left and xtile <= tile_bounds.right \
+                and ytile >= tile_bounds.top and ytile <= tile_bounds.bottom:
+                    return True
+
+        # tile is either not in bounds or message is invalid
+        return False
+
+class TileCounter(StreamElement):
+    """docstring for TIleCounter"""
+    def __init__(self, name):
+        super(TileCounter, self).__init__(name)
+        self.count = 0
+
+    def process(self, message):
+        self.count += 1
+
+    def postProcess(self, message=None):
+        self.log('Tile Count: %s' % self.count)
+
+if __name__ == '__main__':
+    
+    eng = Engine()
+
+    tiler = LLCentricTileProducer('Tiler', 
+                                  'https://api.tiles.mapbox.com/v3/synapse-wireless.k2bl463f/{z}/{x}/{y}.png', 
+                                  LLCoordinate(34.721153, -86.674991), 10000.0, 0, 14)
+    # tiler = MapTileProducer('Tiler', 'https://api.tiles.mapbox.com/v3/synapse-wireless.k2bl463f/{z}/{x}/{y}.png', 0, 12)
+
+    # dl = MapTileDownloader('Downloader', './filtered_tiles')
+    dl = MapTileMultiDownloader('Downloader', './multi_tiles')
+    # dl.addFilter(LLTileFilter(34.721153, -86.674991, 10000.0))
+    tiler.add(dl)
+    tiler.add(TileCounter('Counter'))
+    eng.add(tiler)
+
+    eng.start()
+
+    # print calculateBoundingBox(34.721153, -86.674991, 10000.0)
+    
+    # for i in xrange(5):
+    #     print deg2tile(34.721153, -86.674991, i)
