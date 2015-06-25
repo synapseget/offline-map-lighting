@@ -1,0 +1,104 @@
+<!--<html>
+    <head>
+        <script src="mqa.toolkit.js"></script>
+
+        <script type="text/javascript">
+
+            // An example of using the MQA.EventUtil to hook into the window load event and execute the defined
+            // function passed in as the last parameter. You could alternatively create a plain function here and
+            // have it executed whenever you like (e.g. <body onload="yourfunction">).
+            
+
+            MQA.EventUtil.observe(window, 'load', function() {
+console.log(MQA);
+                // create an object for options
+                var options = {
+                    elt: document.getElementById('map'),             // ID of map element on page
+                    zoom: 11,                                        // initial zoom level of the map
+                    latLng: { lat: 34.721153, lng: -86.674991 },    // center of map in latitude/longitude
+                    mtype: 'map',                                    // map type (map, sat, hyb); defaults to 'map'
+                    zoomOnDoubleClick: true,                          // enable map to be zoomed in when double-clicking on map
+                    url:'http://localhost'
+                };
+
+                // construct an instance of MQA.TileMap with the options object
+                window.map = new MQA.TileMap(options);
+            });
+
+        </script>
+    </head>
+
+    <body>
+        <div id='map' style='height:100%;'></div>
+    </body>
+</html>
+            -->
+            
+            
+<html>
+  <head>
+    <link rel="stylesheet" href="leaflet.css" />
+  
+    <script src="leaflet-src.js"></script>
+
+    <style>
+      #map { height: 100%; }
+    </style>
+
+  </head>
+
+  <body>
+
+    <div id = "map"></div>
+
+  </body>
+
+    <script type="text/javascript" >
+      
+      var map = L.map('map');
+    
+      function getRandomNumber(minimum, maximum) {
+	return Math.floor(Math.random() * (maximum - minimum + 1)) + minimum;
+      }
+
+      function isOnline() {
+	
+	var xhr = new ( window.ActiveXObject || XMLHttpRequest )( "Microsoft.XMLHTTP" );
+	var status;  
+
+	xhr.open( "GET", "http://jsonplaceholder.typicode.com/posts/"+getRandomNumber(1,50), false );
+	
+	try {
+	  xhr.send();
+	  return ( xhr.status >= 200 && (xhr.status < 300 || xhr.status === 304) );
+	} catch (error) {
+	  return false;
+	}
+
+      }
+      
+      function getTileURL() {
+	return (isOnline()) ? 'http://tile.openstreetmap.org/{z}/{x}/{y}.png' : 'multi_tiles/{z}/{x}/{y}.png';
+      }
+      
+      map.on("load", function() {
+	loadMap(getTileURL());	
+      });
+      
+      map.setView([34.7320,-86.5966], 14);
+      
+      function loadMap(tileurl) {
+	L.tileLayer(tileurl, {
+	  maxZoom: 18
+	}).addTo(map);
+      }      
+
+      map.on('idle drag dblclick zoomstart', function() {      
+	loadMap(getTileURL());
+      });            
+
+    </script>
+    
+  </body>
+  
+</html>
