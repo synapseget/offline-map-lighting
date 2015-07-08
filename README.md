@@ -18,3 +18,17 @@ This standalone script requires `tributary` which is a data processing and analy
 
 Currently, there are no command line options (although it would be trivial to add them). The map URL, central lat/lon and zoom levels are hardcoded.
 
+
+## Tile URL
+
+MapQuest
+http://ttiles03.mqcdn.com/tiles/1.0.0/vx/map/{z}/{x}/{y}.png
+
+
+OSM
+http://tile.openstreetmap.org/{z}/{x}/{y}.png
+
+
+MapBox
+http://api.tiles.mapbox.com/v4/mapbox.streets/{z}/{x}/{y}.png?access_token=
+
